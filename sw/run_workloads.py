@@ -39,8 +39,17 @@ N = 256                  # elements per array in the main workloads
 W = 16
 
 
-def rand_list(rng, count, low, high):
+LOW, HIGH = -(1 << (W - 1)), (1 << (W - 1)) - 1   # full 16-bit range: -32768 .. 32767
+
+
+def rand_list(rng, count, low=LOW, high=HIGH):
     return [rng.randint(low, high) for _ in range(count)]
+
+
+def wrap(x):
+    """What the hardware keeps of a result: the low 16 bits, read as signed.
+    For example 32767 + 1 wraps to -32768, like a car odometer."""
+    return golden.to_signed(x & ((1 << W) - 1), W)
 
 
 # ---- Workload definitions -----------------------------------------------------
@@ -48,48 +57,49 @@ def rand_list(rng, count, low, high):
 # addresses), how to make its inputs, and what the correct answer is.
 
 def setup_vadd(rng, m):
-    a, b = rand_list(rng, N, -1000, 1000), rand_list(rng, N, -1000, 1000)
+    a, b = rand_list(rng, N), rand_list(rng, N)
     golden.store_array(m, 0, a)
     golden.store_array(m, 256, b)
-    check = lambda m: golden.load_array(m, 512, N) == [x + y for x, y in zip(a, b)]
+    check = lambda m: golden.load_array(m, 512, N) == [wrap(x + y) for x, y in zip(a, b)]
     return dict(A=0, B=256, C=512), N, check
 
 
 def setup_saxpy(rng, m):
-    x, y, alpha = rand_list(rng, N, -1000, 1000), rand_list(rng, N, -1000, 1000), 3
+    x, y, alpha = rand_list(rng, N), rand_list(rng, N), 3
     golden.store_array(m, 0, x)
     golden.store_array(m, 256, y)
-    check = lambda m: golden.load_array(m, 256, N) == [alpha * p + q for p, q in zip(x, y)]
+    check = lambda m: golden.load_array(m, 256, N) == [wrap(alpha * p + q) for p, q in zip(x, y)]
     return dict(X=0, Y=256, ALPHA=alpha), N, check
 
 
 def setup_relu(rng, m):
-    x = rand_list(rng, N, -1000, 1000)
+    x = rand_list(rng, N)
     golden.store_array(m, 0, x)
     check = lambda m: golden.load_array(m, 256, N) == [max(v, 0) for v in x]
     return dict(X=0, Y=256), N, check
 
 
 def setup_threshold(rng, m):
-    x, limit = rand_list(rng, N, -1000, 1000), 100
+    x, limit = rand_list(rng, N), 100
     golden.store_array(m, 0, x)
     check = lambda m: golden.load_array(m, 256, N) == [v if v >= limit else 0 for v in x]
     return dict(X=0, Y=256, LIMIT=limit), N, check
 
 
 def setup_dot(rng, m):
-    a, b = rand_list(rng, N, -100, 100), rand_list(rng, N, -100, 100)
+    a, b = rand_list(rng, N), rand_list(rng, N)
     golden.store_array(m, 0, a)
     golden.store_array(m, 256, b)
-    want = sum(x * y for x, y in zip(a, b)) & 0xFFFFFFFF
+    # VDOT keeps the low 16 bits of each product (like VMUL), then adds them in 32 bits.
+    want = sum(wrap(x * y) for x, y in zip(a, b)) & 0xFFFFFFFF
     check = lambda m: m.s[3] == want
     return dict(A=0, B=256), N, check
 
 
 def setup_isa_test(rng, m):
     count = 32           # smaller arrays: this program writes 28 result areas
-    golden.store_array(m, 0, rand_list(rng, count, -32768, 32767))
-    golden.store_array(m, 32, rand_list(rng, count, -32768, 32767))
+    golden.store_array(m, 0, rand_list(rng, count))
+    golden.store_array(m, 32, rand_list(rng, count))
     check = lambda m: True       # no simple maths formula; the golden model is the reference
     return dict(A=0, B=32, OUT=64, STRIDE=32), count, check
 
@@ -130,6 +140,7 @@ def write_files(folder, run):
     vasm.write_hex(run["words"], folder / "prog.hex")
     (folder / "data.hex").write_text("\n".join(run["start_memory"]) + "\n")
     (folder / "expect_mem.hex").write_text("\n".join(golden.memory_hex_lines(run["model"])) + "\n")
+    (folder / "expect_vec.hex").write_text("\n".join(golden.vector_hex_lines(run["model"])) + "\n")
     scalars = run["model"].s + [run["instructions"], run["cycles"]]
     (folder / "expect_scalar.hex").write_text("\n".join(f"{v:08x}" for v in scalars) + "\n")
 
@@ -148,6 +159,7 @@ def run_rtl(vvp, folder, vcd):
     args = ["vvp", "-n", str(vvp),
             f"+prog={folder / 'prog.hex'}", f"+data={folder / 'data.hex'}",
             f"+expect_mem={folder / 'expect_mem.hex'}",
+            f"+expect_vec={folder / 'expect_vec.hex'}",
             f"+expect_scalar={folder / 'expect_scalar.hex'}"]
     if vcd:
         args.append(f"+vcd={folder / 'wave.vcd'}")
@@ -177,15 +189,19 @@ def main():
             folder = BUILD / f"{name}_L{lanes}"
             write_files(folder, run)
             status = "golden only"
+            # The table records what the hardware measured when the RTL ran;
+            # on PASS the testbench has already checked it equals the model.
+            cycles, instrs = run["cycles"], run["instructions"]
             if vvp:
-                passed, (cycles, instrs) = run_rtl(vvp, folder, args.vcd)
+                passed, (rtl_cycles, rtl_instrs) = run_rtl(vvp, folder, args.vcd)
                 status = "PASS" if passed else "FAIL"
                 failures += not passed
-            print(f"{name:10s} lanes={lanes}  instructions={run['instructions']:6d}  "
-                  f"cycles={run['cycles']:6d}  {status}")
+                if passed:
+                    cycles, instrs = rtl_cycles, rtl_instrs
+            print(f"{name:10s} lanes={lanes}  instructions={instrs:6d}  "
+                  f"cycles={cycles:6d}  {status}")
             rows.append(dict(workload=name, lanes=lanes, elements=run["elements"],
-                             instructions=run["instructions"], cycles=run["cycles"],
-                             status=status))
+                             instructions=instrs, cycles=cycles, status=status))
         if vvp and not args.no_directed:
             for name in directed_tests.DIRECTED:
                 run = directed_tests.prepare_directed(name, lanes)
