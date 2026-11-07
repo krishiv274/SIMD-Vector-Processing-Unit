@@ -21,6 +21,8 @@ Usage:
 """
 
 import argparse
+import ast
+import operator
 import re
 import sys
 
@@ -60,19 +62,48 @@ def reg(text, kind):
     return int(m.group(2))
 
 
+# The only maths allowed inside a constant: whole numbers, symbol names,
+# brackets and these operators. Anything else (calls, comparisons, "/") is an error.
+BINARY_OPS = {ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul,
+              ast.FloorDiv: operator.floordiv, ast.Mod: operator.mod,
+              ast.LShift: operator.lshift, ast.RShift: operator.rshift,
+              ast.BitAnd: operator.and_, ast.BitOr: operator.or_, ast.BitXor: operator.xor}
+UNARY_OPS = {ast.USub: operator.neg, ast.UAdd: operator.pos, ast.Invert: operator.invert}
+
+
 def value(text, symbols):
     """Work out a constant such as 'B', 'ITER' or 'OUT+3*STRIDE'.
 
-    Uses Python's own arithmetic with only our symbol names available.
-    The programs are our own files, so this is safe enough for a course tool.
+    The text is split into a tree (Python's own parser) and only the pieces
+    listed above are worked out, so a program can never run other code.
     """
     try:
-        result = eval(text, {"__builtins__": {}}, dict(symbols))
-    except Exception as exc:
-        raise AsmError(f"cannot work out the value of '{text}' ({exc})") from None
-    if not isinstance(result, int):
+        tree = ast.parse(text.strip(), mode="eval")
+    except SyntaxError:
+        raise AsmError(f"cannot work out the value of '{text}'") from None
+    return calculate(tree.body, text, symbols)
+
+
+def calculate(node, text, symbols):
+    """Work out one piece of a constant, then the pieces inside it."""
+    if isinstance(node, ast.Constant) and type(node.value) is int:
+        return node.value
+    if isinstance(node, ast.Name):
+        if node.id not in symbols:
+            raise AsmError(f"unknown name '{node.id}' in '{text}'")
+        return symbols[node.id]
+    if isinstance(node, ast.UnaryOp) and type(node.op) in UNARY_OPS:
+        return UNARY_OPS[type(node.op)](calculate(node.operand, text, symbols))
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
         raise AsmError(f"'{text}' is not a whole number (use // to divide)")
-    return result
+    if isinstance(node, ast.BinOp) and type(node.op) in BINARY_OPS:
+        left = calculate(node.left, text, symbols)
+        right = calculate(node.right, text, symbols)
+        try:
+            return BINARY_OPS[type(node.op)](left, right)
+        except (ZeroDivisionError, ValueError, OverflowError, MemoryError) as exc:   # e.g. N//0
+            raise AsmError(f"cannot work out the value of '{text}' ({exc})") from None
+    raise AsmError(f"cannot work out the value of '{text}'")
 
 
 def split_mem(text):
