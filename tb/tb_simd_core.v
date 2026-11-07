@@ -4,10 +4,12 @@
 // This testbench plays the role of the "computer around the chip":
 //   * it holds the instruction memory and the data memory
 //   * it loads a program and its input data from hex files
-//   * it releases reset, lets the core run until HALT, and then
+//   * it releases reset, lets the core run until HALT, keeps the clock going
+//     for 50 more cycles (nothing may be written after HALT), and then
 //   * compares EVERYTHING with the Python golden model:
 //       - every word of data memory
 //       - every scalar register (read through the debug port)
+//       - every vector register
 //       - the number of instructions and clock cycles
 //
 // The hex files are made by sw/run_workloads.py, which also runs this
@@ -32,6 +34,7 @@ module tb_simd_core;
     localparam IDEPTH     = 1 << IADDR_W;
     localparam DDEPTH     = 1 << DADDR_W;
     localparam MAX_CYCLES = 200000;      // give up if HALT never comes
+    localparam AFTER_HALT = 50;          // clocks to keep running after HALT
 
     // ---- Clock and reset ---------------------------------------------------------
     reg clk = 1'b0;
@@ -64,6 +67,7 @@ module tb_simd_core;
     reg [31:0]        imem       [0:IDEPTH-1];
     reg [LANES*W-1:0] dmem       [0:DDEPTH-1];
     reg [LANES*W-1:0] expect_mem [0:DDEPTH-1];
+    reg [LANES*W-1:0] expect_vec [0:7];      // v0..v7
     reg [31:0]        expect_scalar [0:9];   // s0..s7, then instructions, then cycles
 
     always @(posedge clk) begin
@@ -74,7 +78,7 @@ module tb_simd_core;
     end
 
     // ---- The test ----------------------------------------------------------------------
-    reg [8*256-1:0] prog_file, data_file, mem_file, scalar_file, vcd_file;
+    reg [8*256-1:0] prog_file, data_file, mem_file, vec_file, scalar_file, vcd_file;
     integer errors = 0;
     integer i;
 
@@ -82,8 +86,9 @@ module tb_simd_core;
         if (!$value$plusargs("prog=%s", prog_file) ||
             !$value$plusargs("data=%s", data_file) ||
             !$value$plusargs("expect_mem=%s", mem_file) ||
+            !$value$plusargs("expect_vec=%s", vec_file) ||
             !$value$plusargs("expect_scalar=%s", scalar_file)) begin
-            $display("usage: +prog= +data= +expect_mem= +expect_scalar= [+vcd=]");
+            $display("usage: +prog= +data= +expect_mem= +expect_vec= +expect_scalar= [+vcd=]");
             $display("TEST FAILED");
             $finish;
         end
@@ -95,6 +100,7 @@ module tb_simd_core;
         $readmemh(prog_file,   imem);
         $readmemh(data_file,   dmem);
         $readmemh(mem_file,    expect_mem);
+        $readmemh(vec_file,    expect_vec);
         $readmemh(scalar_file, expect_scalar);
 
         // Hold reset for two clocks, then let the program run.
@@ -112,6 +118,17 @@ module tb_simd_core;
         if (!halted) begin
             $display("  TIMEOUT: no HALT after %0d cycles", MAX_CYCLES);
             errors = errors + 1;
+        end
+
+        // HALT must really stop the core: keep the clock running and make sure
+        // nothing is written to memory. Anything else that changed (registers,
+        // counters) shows up in the checks below.
+        for (i = 0; i < AFTER_HALT; i = i + 1) begin
+            @(negedge clk);
+            if (dmem_we !== 1'b0) begin
+                errors = errors + 1;
+                $display("  MEMORY WRITE %0d cycles after HALT", i + 1);
+            end
         end
 
         // 1. Data memory must match word for word.
@@ -132,7 +149,15 @@ module tb_simd_core;
             end
         end
 
-        // 3. Instruction and cycle counts must match the golden model exactly.
+        // 3. Vector registers must match too (catches a stray write to a register
+        //    that no later instruction reads).
+        for (i = 0; i < 8; i = i + 1)
+            if (dut.u_vregs.regs[i] !== expect_vec[i]) begin
+                errors = errors + 1;
+                $display("  VECTOR MISMATCH v%0d: got %h want %h", i, dut.u_vregs.regs[i], expect_vec[i]);
+            end
+
+        // 4. Instruction and cycle counts must match the golden model exactly.
         if (instr_count !== expect_scalar[8]) begin
             errors = errors + 1;
             $display("  INSTRUCTION COUNT: got %0d want %0d", instr_count, expect_scalar[8]);

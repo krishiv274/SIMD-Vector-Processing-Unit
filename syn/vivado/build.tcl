@@ -5,7 +5,7 @@
 # maximum clock frequency after place-and-route.
 #
 # Run from the repository root (Vivado must be installed):
-#   python3 syn/run_syn.py --lanes 8 --seeds 1     # or any command that makes build/syn/ecp5_L8/*.hex
+#   python3 syn/run_syn.py --board-only --lanes 8   # makes build/syn/board_L8/*.hex (needs only iverilog)
 #   vivado -mode batch -source syn/vivado/build.tcl -tclargs 8
 #
 # The argument is the lane count (1, 2, 4 or 8). Reports go to build/vivado_L<lanes>/.
@@ -18,10 +18,10 @@ file mkdir $out
 
 # The memories are filled from program.hex and data.hex. fpga_top.v looks for
 # them in the current folder, so copy them next to the reports and work there.
-set hex_dir [file join $root build syn ecp5_L$lanes]
+set hex_dir [file join $root build syn board_L$lanes]
 foreach f {program.hex data.hex} {
     if {![file exists [file join $hex_dir $f]]} {
-        puts "ERROR: $hex_dir/$f is missing - run: python3 syn/run_syn.py --lanes $lanes --seeds 1"
+        puts "ERROR: $hex_dir/$f is missing - run: python3 syn/run_syn.py --board-only --lanes $lanes"
         exit 1
     }
     file copy -force [file join $hex_dir $f] $out

@@ -1,7 +1,9 @@
 # =============================================================================
 # Makefile - one-word commands for the whole project
 # =============================================================================
-#   make test     lint + unit testbenches + Python checks + full-system runs + board check
+#   make test     lint + unit testbenches + Python checks + full-system runs + random
+#                 programs + board check
+#   make fuzz     1,000 random programs per lane count, RTL against the golden model
 #   make lint     check every Verilog file with Verilator
 #   make perf     scalar vs SIMD cycle counts for 1, 2, 4, 8 lanes -> results/perf.csv
 #   make syn      FPGA size and maximum clock speed            -> results/fpga_*.csv
@@ -25,7 +27,7 @@ CORE_PARTS := rtl/vec_alu_lane.v rtl/vec_alu_array.v rtl/vec_regfile.v rtl/scala
 CORE_READY := $(if $(filter-out $(wildcard $(CORE_PARTS)),$(CORE_PARTS)),,yes)
 LINT_WAIT  := $(if $(CORE_READY),,rtl/simd_core.v rtl/fpga_top.v)
 
-.PHONY: test lint unit pytest system board perf syn plots report clean
+.PHONY: test lint unit pytest system board fuzz perf syn plots report clean
 
 test: lint unit pytest system board
 
@@ -69,10 +71,11 @@ ifneq ($(wildcard sw/tests),)
 	python3 -m unittest discover -s sw/tests
 endif
 
-# ---- Full system: every workload on the scalar (1 lane) and SIMD (8 lane) core --
+# ---- Full system: every workload and directed test at 1, 2, 4 and 8 lanes --------
 system:
 ifneq ($(and $(CORE_READY),$(wildcard tb/tb_simd_core.v)),)
-	python3 sw/run_workloads.py --lanes 1 8
+	python3 sw/run_workloads.py --lanes 1 2 4 8
+	python3 sw/fuzz.py
 else
 	@echo "system: waiting for every block to be merged"
 endif
@@ -82,6 +85,10 @@ board:
 ifneq ($(and $(CORE_READY),$(wildcard rtl/fpga_top.v)),)
 	python3 syn/run_syn.py --board-only
 endif
+
+# ---- Random programs, a longer run (about 3 minutes) ---------------------------
+fuzz:
+	python3 sw/fuzz.py --programs 1000
 
 # ---- Experiments ------------------------------------------------------------------
 perf:

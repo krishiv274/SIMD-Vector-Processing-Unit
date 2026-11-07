@@ -10,6 +10,9 @@ the unusual cases, where bugs like to hide:
   * a scalar wider than 16 bits broadcast to the lanes (only the low 16 bits count)
   * reduce instructions on compare results (each true lane adds -1)
   * unused op codes (the vector ones write 0, the others do nothing)
+  * BNE on numbers that differ only above bit 15 (it must compare all 32 bits)
+  * VST, BNE and HALT with their unused fields filled in (no register may change)
+  * instructions after HALT (they must never run)
 
 Some of these need op codes that the assembler refuses on purpose, so the
 programs are built here in Python. run_workloads.py runs each one on the golden
@@ -97,9 +100,48 @@ def pc_wrap_program():
     return words
 
 
+def branch_halt_program():
+    # s2 and s3 have the same low 16 bits; s5 and s3 differ only in bit 31.
+    # Each BNE must jump. If it does not, the VST right after it marks memory.
+    doubling = "\n".join(["ADD s1, s1, s1"] * 16)            # s1 = 1 -> 0x10000
+    words = vasm.assemble(f"""
+            ADDI s1, s0, 1
+            {doubling}
+            ADDI s2, s1, 5          # s2 = 0x00010005
+            ADDI s3, s0, 5          # s3 = 0x00000005
+            VLD  v1, 1(s0)
+            VLD  v2, 2(s0)
+            VLD  v3, 3(s0)          # v3, v5, v6, v7 hold random values, so a stray
+            VLD  v5, 4(s0)          # write into any of them would show up
+            VLD  v6, 5(s0)
+            VLD  v7, 6(s0)
+            BNE  s2, s3, bit16
+            VST  v1, 30(s0)         # only reached if BNE ignored bit 16
+    bit16:  ADD  s4, s1, s1
+    """) + vasm.assemble("\n".join(["ADD s4, s4, s4"] * 14) + """
+            ADDI s5, s4, 5          # s5 = 0x80000005
+            BNE  s5, s3, bit31
+            VST  v1, 31(s0)         # only reached if BNE ignored bit 31
+    bit31:  ADDI s6, s0, 1
+    """)
+    # Unused fields filled in: rd on VST and BNE, every field on HALT.
+    words += [vasm.encode(vasm.OP_VST, rd=6, ra=0, rb=2, imm=32),          # store v2, must not write v6
+              vasm.encode(vasm.OP_BNE, rd=5, ra=3, rb=3, imm=3),           # equal: not taken, must not write v5
+              vasm.encode(vasm.OP_HALT, rd=7, ra=1, rb=2, imm=0x1234)]      # must not write v7
+    # Nothing below may run: each line would change memory or a register.
+    words += vasm.assemble("""
+            ADDI s6, s0, 99
+            VADD v3, v1, v2
+            VST  v1, 33(s0)
+            HALT
+    """)
+    return words
+
+
 DIRECTED = {
     "corners": corner_program,
     "pc_wrap": pc_wrap_program,
+    "branch_halt": branch_halt_program,
 }
 
 

@@ -17,8 +17,10 @@
 //   led[7:0]  eight LEDs: the low 8 bits of that register
 //   done      one LED: lights up when the program reaches HALT
 //
-// With the dot-product program loaded, setting the switches to 3 shows the
-// low byte of the dot product on the LEDs.
+// syn/run_syn.py loads isa_test, the program that runs every instruction, so
+// synthesis has to build the whole processor (a program that never uses some
+// instructions would let the tools remove their logic). Setting the switches
+// to 7 shows the low byte of its running dot product (s7) on the LEDs.
 // =============================================================================
 
 module fpga_top #(
@@ -35,7 +37,7 @@ module fpga_top #(
 );
 
     localparam IADDR_W = 8;     // 256 instructions
-    localparam DADDR_W = 9;     // 512 vectors: two 256-element arrays fit even with 1 lane
+    localparam DADDR_W = 10;    // 1,024 vectors, the same as in simulation, so every program fits
 
     wire [IADDR_W-1:0] imem_addr;
     reg  [31:0]        imem_data;

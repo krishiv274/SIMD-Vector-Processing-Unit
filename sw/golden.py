@@ -132,7 +132,17 @@ def load_array(model, base, count):
     return [to_signed(model.mem[base + i // lanes][i % lanes], model.w) for i in range(count)]
 
 
+def hex_lines(words, w):
+    """One hex line per vector, lane 0 in the lowest (rightmost) digits."""
+    digits = w // 4
+    return ["".join(f"{x:0{digits}x}" for x in reversed(word)) for word in words]
+
+
 def memory_hex_lines(model):
-    """One hex line per memory word, lane 0 in the lowest (rightmost) digits."""
-    digits = model.w // 4
-    return ["".join(f"{x:0{digits}x}" for x in reversed(word)) for word in model.mem]
+    """The whole data memory, one line per word."""
+    return hex_lines(model.mem, model.w)
+
+
+def vector_hex_lines(model):
+    """The eight vector registers v0..v7, one line each."""
+    return hex_lines(model.v, model.w)

@@ -2,9 +2,12 @@
 run_syn.py - builds the SIMD unit for real FPGAs and records size and speed.
 
 For each lane count (1, 2, 4, 8) it:
-  1. prepares the dot-product program and data for the FPGA memories, and
-     simulates the board version (fpga_top, tb/tb_fpga_top.v) to prove it
-     gives the golden model's answer before anything is built
+  1. loads isa_test, the program that runs every instruction, into the FPGA
+     memories (a program that skipped some instructions would let synthesis
+     remove their logic and make the design look smaller and faster), and
+     simulates the board version (fpga_top, tb/tb_fpga_top.v) to prove its
+     registers and every memory word match the golden model before anything
+     is built
   2. Lattice ECP5-25F:  Yosys synthesis + nextpnr place-and-route
        -> logic cells, flip-flops, multipliers, block RAM and the
           maximum clock frequency (Fmax) from the timing analysis.
@@ -12,13 +15,16 @@ For each lane count (1, 2, 4, 8) it:
           and keep the median.
   3. Xilinx Artix-7 (xc7a35t, the Basys-3 board): Yosys synthesis only
        -> LUTs, flip-flops, DSP blocks and block RAM (an estimate; the
-          exact numbers and Fmax come from Vivado, see syn/vivado/)
+          exact numbers and Fmax come from Vivado, see syn/vivado/). The
+          design is flattened first, as synth_ecp5 does, so each cell is
+          counted once.
 
 Outputs: results/fpga_ecp5.csv and results/fpga_artix7.csv
 
 Needs: yosys, and nextpnr-ecp5 (or "pip install yowasp-nextpnr-ecp5").
 Usage:  python3 syn/run_syn.py [--lanes 1 2 4 8] [--seeds 3]
-        python3 syn/run_syn.py --board-only      # just the board simulation (used by make test)
+        python3 syn/run_syn.py --board-only      # just the board simulation (used by make test;
+                                                 # also makes the memory files Vivado needs)
 """
 
 import argparse
@@ -33,12 +39,15 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "sw"))
+import golden        # noqa: E402
 import run_workloads  # noqa: E402
 import vasm           # noqa: E402
 
 BUILD = ROOT / "build" / "syn"
 RTL = sorted(str(p) for p in (ROOT / "rtl").glob("*.v"))
-FPGA_DMEM_WORDS = 512        # fpga_top.v data memory depth (DADDR_W = 9)
+FPGA_PROGRAM = "isa_test"    # uses every instruction, so nothing can be optimised away
+FPGA_DMEM_WORDS = 1024       # fpga_top.v data memory depth (DADDR_W = 10)
+RESULT_REG = 7               # isa_test keeps its running dot product in s7
 
 
 def find_nextpnr():
@@ -49,18 +58,17 @@ def find_nextpnr():
 
 
 def prepare_memories(folder, lanes):
-    """Fill the FPGA memories with the dot-product program and its data,
-    then simulate the board version to check it gives the right answer."""
+    """Fill the FPGA memories with isa_test and its data, then simulate the
+    board version to check it gives the golden model's answer."""
     folder.mkdir(parents=True, exist_ok=True)
-    run = run_workloads.prepare("dot", lanes)
+    run = run_workloads.prepare(FPGA_PROGRAM, lanes)
     memory = run["start_memory"]
-    # Everything past the FPGA's memory size must be empty, or data would be lost.
-    dropped = [i for i, line in enumerate(memory[FPGA_DMEM_WORDS:], FPGA_DMEM_WORDS) if line.strip("0")]
-    if dropped:
-        sys.exit(f"lanes={lanes}: data at word {dropped[0]} does not fit the FPGA memory")
+    if len(memory) != FPGA_DMEM_WORDS:            # the model and the FPGA must have the same memory
+        sys.exit(f"golden model has {len(memory)} memory words, the FPGA has {FPGA_DMEM_WORDS}")
     vasm.write_hex(run["words"], folder / "program.hex")
-    (folder / "data.hex").write_text("\n".join(memory[:FPGA_DMEM_WORDS]) + "\n")
-    simulate_board(folder, lanes, expected=run["model"].s[3])
+    (folder / "data.hex").write_text("\n".join(memory) + "\n")
+    (folder / "expect_mem.hex").write_text("\n".join(golden.memory_hex_lines(run["model"])) + "\n")
+    simulate_board(folder, lanes, expected=run["model"].s[RESULT_REG])
 
 
 def simulate_board(folder, lanes, expected):
@@ -70,11 +78,13 @@ def simulate_board(folder, lanes, expected):
     subprocess.run(["iverilog", "-g2012", "-I", str(ROOT / "rtl"), "-y", str(ROOT / "rtl"),
                     f"-Ptb_fpga_top.LANES={lanes}", "-o", str(vvp), str(ROOT / "tb" / "tb_fpga_top.v")],
                    check=True)
-    result = subprocess.run(["vvp", "-n", str(vvp), f"+expect={expected:08x}", "+sel=3"],
+    result = subprocess.run(["vvp", "-n", str(vvp), f"+expect={expected:08x}", f"+sel={RESULT_REG}",
+                             "+expect_mem=expect_mem.hex"],
                             cwd=folder, capture_output=True, text=True)
     if "TEST PASSED" not in result.stdout:
         sys.exit(f"lanes={lanes}: board simulation failed\n{result.stdout}{result.stderr}")
-    print(f"board   lanes={lanes}: dot product {expected:#010x} on the LEDs, simulation passed")
+    print(f"board   lanes={lanes}: s{RESULT_REG} = {expected:#010x} on the LEDs and all "
+          f"{FPGA_DMEM_WORDS} memory words match, simulation passed")
 
 
 def yosys(folder, lanes, synth_cmd, json_out=None):
@@ -123,7 +133,7 @@ def ecp5(lanes, seeds, nextpnr):
 def artix7(lanes):
     folder = BUILD / f"artix7_L{lanes}"
     prepare_memories(folder, lanes)
-    c = yosys(folder, lanes, "synth_xilinx -family xc7 -top fpga_top")
+    c = yosys(folder, lanes, "synth_xilinx -family xc7 -top fpga_top -flatten")
     count = lambda prefix: sum(v for k, v in c.items() if k.startswith(prefix))
     return dict(lanes=lanes,
                 luts=count("LUT"), luts_total=20800,
