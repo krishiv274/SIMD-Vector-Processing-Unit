@@ -3,11 +3,16 @@ fuzz.py - random programs on the hardware and the golden model.
 
 The test programs are written by hand, so they only try what we thought of.
 This script makes up random programs instead: every op code (used and
-unused), random register fields, the spare bit 16 set at random, random
-constants, random branches and random memory contents. Each program runs on
-the golden model and on the RTL (tb/tb_simd_core.v), and the two must agree
-on every memory word, every register, the instruction count and the cycle
-count.
+unused), random register fields, the mask bit 16 set at random, lane masks
+from VMSK, random constants, random branches and random memory contents.
+Each program runs on the golden model and on the RTL (tb/tb_simd_core.v),
+on BOTH cores, and the two must agree on every memory word, every register,
+the lane mask, the instruction count and the cycle count.
+
+Random programs are good at finding pipeline bugs, because they put every
+kind of instruction right behind every other kind: a load right before a
+store of the same register, a reduce right before a branch on its sum, a
+masked op right before a mask change, and so on.
 
 A program that would loop forever is thrown away and a new one is made.
 
@@ -32,8 +37,10 @@ def random_word(rng):
     """One random 32-bit instruction, biased towards the interesting ones."""
     roll = rng.random()
     if roll < 0.45:
-        opcode = rng.randrange(0x00, 0x30)              # vector ALU and reduce, unused jobs too
-    elif roll < 0.60:
+        opcode = rng.randrange(0x00, 0x30)              # vector ALU and reduce, all 16 jobs
+    elif roll < 0.52:
+        opcode = 0x34                                   # VMSK: a new lane mask
+    elif roll < 0.62:
         opcode = rng.choice([0x30, 0x30, 0x31])         # loads and stores
     elif roll < 0.80:
         opcode = rng.choice([0x38, 0x38, 0x39])         # scalar maths
@@ -42,23 +49,25 @@ def random_word(rng):
     else:
         opcode = rng.randrange(0x30, 0x40)              # any class-11 code, used or not
     rd, ra, rb = rng.randrange(8), rng.randrange(8), rng.randrange(8)
-    spare = rng.randrange(2)                            # bit 16 must make no difference
-    if opcode == 0x3C:                                  # mostly forward jumps, some back
+    masked = rng.randrange(2)                           # bit 16: masked (ignored in class 11)
+    if opcode == 0x3C and rng.random() < 0.1:           # a long jump, either way (wraps around)
+        imm = rng.choice([1, -1]) * rng.randint(100, 255)
+    elif opcode == 0x3C:                                # mostly short forward jumps, some back
         imm = rng.randint(1, 12) if rng.random() < 0.75 else rng.randint(-12, -1)
     elif rng.random() < 0.5:
         imm = rng.randint(-40, 40)                      # small: lands inside memory often
     else:
         imm = rng.randrange(1 << 16)                    # anything: tests wrap-around
-    return (opcode << 26) | (rd << 23) | (ra << 20) | (rb << 17) | (spare << 16) | (imm & 0xFFFF)
+    return (opcode << 26) | (rd << 23) | (ra << 20) | (rb << 17) | (masked << 16) | (imm & 0xFFFF)
 
 
-def make_case(rng, lanes):
+def make_case(rng, lanes, pipelined):
     """A random program that reaches HALT, with its golden-model run."""
     while True:
         words = [random_word(rng) for _ in range(rng.randint(10, 120))]
         if rng.random() < 0.3:          # otherwise the program runs into the HALT padding
             words.append(HALT)
-        model = golden.SimdModel(lanes, W)
+        model = golden.SimdModel(lanes, W, pipelined=pipelined)
         for i in range(len(model.mem)):
             model.mem[i] = [rng.randrange(1 << W) for _ in range(lanes)]
         start_memory = golden.memory_hex_lines(model)
@@ -74,24 +83,29 @@ def main():
     parser = argparse.ArgumentParser(description="Random programs: RTL against the golden model.")
     parser.add_argument("--programs", type=int, default=25, help="programs per lane count")
     parser.add_argument("--lanes", type=int, nargs="+", default=[1, 2, 4, 8])
+    parser.add_argument("--cores", nargs="+", default=list(run_workloads.CORES),
+                        choices=list(run_workloads.CORES))
     parser.add_argument("--seed", type=int, default=1)
     args = parser.parse_args()
 
     failures = 0
-    for lanes in args.lanes:
-        vvp = run_workloads.compile_tb(lanes)
-        rng = random.Random(f"fuzz-{args.seed}-{lanes}")
-        for n in range(args.programs):
-            run = make_case(rng, lanes)
-            folder = run_workloads.BUILD / f"fuzz_L{lanes}_{n}"
-            run_workloads.write_files(folder, run)
-            passed, _ = run_workloads.run_rtl(vvp, folder, False)
-            if passed:
-                shutil.rmtree(folder)               # keep only the files of a failing program
-            else:
-                failures += 1
-                print(f"MISMATCH lanes={lanes} program {n}: files in {folder}")
-        print(f"fuzz lanes={lanes}: {args.programs} random programs, {failures} mismatches so far")
+    for core in args.cores:
+        pipelined = run_workloads.CORES[core]
+        for lanes in args.lanes:
+            vvp = run_workloads.compile_tb(lanes, pipelined)
+            rng = random.Random(f"fuzz-{args.seed}-{lanes}")    # same programs for both cores
+            for n in range(args.programs):
+                run = make_case(rng, lanes, pipelined)
+                folder = run_workloads.BUILD / f"fuzz_L{lanes}_{core}_{n}"
+                run_workloads.write_files(folder, run)
+                passed, _ = run_workloads.run_rtl(vvp, folder, False)
+                if passed:
+                    shutil.rmtree(folder)           # keep only the files of a failing program
+                else:
+                    failures += 1
+                    print(f"MISMATCH {core} lanes={lanes} program {n}: files in {folder}")
+            print(f"fuzz {core:6s} lanes={lanes}: {args.programs} random programs, "
+                  f"{failures} mismatches so far")
     if failures:
         sys.exit(f"{failures} random program(s) FAILED")
 

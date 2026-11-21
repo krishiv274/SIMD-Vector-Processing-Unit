@@ -85,30 +85,29 @@ A disabled lane (lane_enable[i] = 0) still raises its flag if its result is non-
 - `lane_enable` controls which lanes contribute to the **reduction sum**.
 - `lane_flags` reflects the **ALU result**, which is useful for predication.
 
-The upcoming VMSK instruction will read `lane_flags` to build a predicate mask (which lanes should be active next). It would be wrong for VMSK to skip checking a lane simply because that lane happened to be disabled in the previous reduction.
+`VMSK` relies on this: it builds the new mask from every lane, whatever the old mask was.
 
 ---
 
-## How lane_enable supports VMSK (future)
+## How the cores use the two signals
 
-VMSK (Vector MaSK) is a planned instruction that:
+`VMSK va` sets the lane mask: lane *i* is switched on where `va[i] ≠ 0`. Inside the core it runs as `VOR va, s0` (`s0` is always 0), so each lane's result is just `va[i]`. `lane_flags` marks the non-zero lanes, and those bits are written into the mask register.
 
-1. Runs an ALU operation on all lanes (e.g., `SEQ` for "equals zero").
-2. Reads `lane_flags` to get one bit per lane (non-zero result = lane is "true").
-3. Writes those bits into the lane-mask register.
-4. Subsequent masked instructions use the mask register as `lane_enable` for their reductions.
+An instruction with the `.M` ending then uses the mask. Both cores pick the lanes like this:
 
-This design keeps `lane_flags` and `lane_enable` separate so both can be used at the same time:
-
-```
-cycle 1: VSEQ v_tmp, v_data, v_zero   ; compare: which lanes are non-zero?
-         → lane_flags = [1,0,1,1,0,0,0,1]
-cycle 2: VMSK                          ; lane_mask ← lane_flags
-cycle 3: VDOT s0, v_a, v_b            ; dot product over active lanes only
-         → lane_enable = lane_mask = [1,0,1,1,0,0,0,1]
+```verilog
+lanes_on = masked ? lane_mask : all ones
 ```
 
-The current single-cycle core ties `lane_enable` to all-ones. The pipelined core (Mahir's work, Issue #21) will connect `lane_enable` to the mask register output.
+`lanes_on` goes to `lane_enable` here (a masked reduce adds only those lanes) and to `write_lanes` in the vector register file (a masked vector instruction changes only those lanes). An instruction without `.M` uses every lane.
+
+From [`sumpos.s`](../sw/programs/sumpos.s), which adds up only the positive numbers:
+
+```text
+VSLT      v2, v3, v1    # v2 = all ones where 0 < X[i]   (v3 = 0)
+VMSK      v2            # mask: on only where X[i] is positive
+VREDADD.M s4, v1, v3    # s4 = sum of the positive lanes; the rest add 0
+```
 
 ---
 
@@ -148,25 +147,21 @@ end
 
 The rest of the adder tree is unchanged. This keeps the design synthesizable, parameterized for LANES = 1, 2, 4, 8, and free of sequential logic.
 
-### simd_core.v
+### In the cores
 
-Two small changes to the combiner instantiation:
+The single-cycle core (`simd_core.v`) connects the combiner like this; the pipelined core does the same in its last stage, with that stage's signals (`w_vec`, `w_lanes`):
 
 ```verilog
-/* verilator lint_off UNUSEDSIGNAL */
-wire [LANES-1:0] combiner_flags;
-/* verilator lint_on UNUSEDSIGNAL */
-
 result_combiner #(.LANES(LANES), .W(W)) u_combiner (
     .lane_results  (alu_out),
-    .lane_enable   ({LANES{1'b1}}),   // all lanes on; pipelined core uses lane_mask
+    .lane_enable   (lanes_on),        // masked reduce: switched-off lanes add 0
     .vector_result (vector_result),
     .sum_result    (sum_result),
-    .lane_flags    (combiner_flags)   // captured; used by VMSK in future core
+    .lane_flags    (lane_flags)       // VMSK: the non-zero lanes become the mask
 );
 ```
 
-No other changes are made to the core or control unit. Existing instruction behaviour is fully preserved.
+An instruction without `.M` has every lane switched on, so it behaves exactly as in Phase 1.
 
 ---
 

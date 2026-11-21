@@ -9,7 +9,7 @@
 //   * compares EVERYTHING with the Python golden model:
 //       - every word of data memory
 //       - every scalar register (read through the debug port)
-//       - every vector register
+//       - every vector register and the lane mask
 //       - the number of instructions and clock cycles
 //
 // The hex files are made by sw/run_workloads.py, which also runs this
@@ -17,10 +17,18 @@
 // "plusargs" on the command line:
 //
 //   vvp tb.vvp +prog=prog.hex +data=data.hex +expect_mem=mem.hex
-//              +expect_scalar=scalar.hex [+vcd=wave.vcd]
+//              +expect_scalar=scalar.hex [+vcd=wave.vcd] [+reset_at=N]
+//
+// +reset_at=N presses reset N cycles into the run, for 3 cycles, as the
+// board's reset button would. Nothing may be written to memory or to any
+// register while reset is held; then the program starts again from the
+// beginning. (run_workloads.py uses it with programs that give the same
+// result when they are started again, so the expected files do not change.)
 //
 // LANES is a parameter, so one testbench covers the scalar (LANES = 1)
-// and SIMD (LANES = 2, 4, 8) versions.
+// and SIMD (LANES = 2, 4, 8) versions. PIPELINED picks the core:
+// 0 = single-cycle (simd_core.v), 1 = pipelined (simd_pipe_core.v). Both
+// have the same ports, so everything else here is shared.
 // =============================================================================
 
 `timescale 1ns/1ps
@@ -28,6 +36,7 @@
 module tb_simd_core;
 
     parameter  LANES      = 8;
+    parameter  PIPELINED  = 0;
     localparam W          = 16;
     localparam IADDR_W    = 8;
     localparam DADDR_W    = 10;
@@ -53,13 +62,27 @@ module tb_simd_core;
     wire               halted;
     wire [31:0]        cycle_count, instr_count;
 
-    simd_core #(.LANES(LANES), .W(W), .IADDR_W(IADDR_W), .DADDR_W(DADDR_W)) dut (
-        .clk(clk), .rst(rst),
-        .imem_addr(imem_addr), .imem_data(imem_data),
-        .dmem_addr(dmem_addr), .dmem_wdata(dmem_wdata), .dmem_we(dmem_we), .dmem_rdata(dmem_rdata),
-        .debug_sel(debug_sel), .debug_data(debug_data),
-        .halted(halted), .cycle_count(cycle_count), .instr_count(instr_count)
-    );
+    // Both branches are called "core", so the checks below can look inside
+    // with the same name (core.dut.u_vregs ...) whichever core is built.
+    generate
+        if (PIPELINED) begin : core
+            simd_pipe_core #(.LANES(LANES), .W(W), .IADDR_W(IADDR_W), .DADDR_W(DADDR_W)) dut (
+                .clk(clk), .rst(rst),
+                .imem_addr(imem_addr), .imem_data(imem_data),
+                .dmem_addr(dmem_addr), .dmem_wdata(dmem_wdata), .dmem_we(dmem_we), .dmem_rdata(dmem_rdata),
+                .debug_sel(debug_sel), .debug_data(debug_data),
+                .halted(halted), .cycle_count(cycle_count), .instr_count(instr_count)
+            );
+        end else begin : core
+            simd_core #(.LANES(LANES), .W(W), .IADDR_W(IADDR_W), .DADDR_W(DADDR_W)) dut (
+                .clk(clk), .rst(rst),
+                .imem_addr(imem_addr), .imem_data(imem_data),
+                .dmem_addr(dmem_addr), .dmem_wdata(dmem_wdata), .dmem_we(dmem_we), .dmem_rdata(dmem_rdata),
+                .debug_sel(debug_sel), .debug_data(debug_data),
+                .halted(halted), .cycle_count(cycle_count), .instr_count(instr_count)
+            );
+        end
+    endgenerate
 
     // ---- Memories --------------------------------------------------------------------
     // Both behave like FPGA block RAM: the data for an address appears one
@@ -68,7 +91,7 @@ module tb_simd_core;
     reg [LANES*W-1:0] dmem       [0:DDEPTH-1];
     reg [LANES*W-1:0] expect_mem [0:DDEPTH-1];
     reg [LANES*W-1:0] expect_vec [0:7];      // v0..v7
-    reg [31:0]        expect_scalar [0:9];   // s0..s7, then instructions, then cycles
+    reg [31:0]        expect_scalar [0:10];  // s0..s7, instructions, cycles, lane mask
 
     always @(posedge clk) begin
         imem_data  <= imem[imem_addr];
@@ -81,6 +104,17 @@ module tb_simd_core;
     reg [8*256-1:0] prog_file, data_file, mem_file, vec_file, scalar_file, vcd_file;
     integer errors = 0;
     integer i;
+    integer reset_at;
+    reg     mid_reset = 1'b0;          // 1 while the reset pressed during the run is held
+
+    // While that reset is held, no write of any kind may happen.
+    always @(posedge clk)
+        if (mid_reset && (dmem_we === 1'b1 || core.dut.u_vregs.write_en === 1'b1 ||
+                          core.dut.u_vregs.mask_write_en === 1'b1 ||
+                          core.dut.u_sregs.write_en === 1'b1)) begin
+            errors = errors + 1;
+            $display("  WRITE DURING RESET at %0t", $time);
+        end
 
     initial begin
         if (!$value$plusargs("prog=%s", prog_file) ||
@@ -106,6 +140,14 @@ module tb_simd_core;
         // Hold reset for two clocks, then let the program run.
         repeat (2) @(posedge clk);
         @(negedge clk) rst = 1'b0;
+
+        // Optionally press reset again in the middle of the run.
+        if ($value$plusargs("reset_at=%d", reset_at) && reset_at > 0) begin
+            repeat (reset_at) @(posedge clk);
+            @(negedge clk) begin rst = 1'b1; mid_reset = 1'b1; end
+            repeat (3) @(posedge clk);
+            @(negedge clk) begin rst = 1'b0; mid_reset = 1'b0; end
+        end
 
         // Wait for HALT (or give up).
         i = 0;
@@ -152,10 +194,15 @@ module tb_simd_core;
         // 3. Vector registers must match too (catches a stray write to a register
         //    that no later instruction reads).
         for (i = 0; i < 8; i = i + 1)
-            if (dut.u_vregs.regs[i] !== expect_vec[i]) begin
+            if (core.dut.u_vregs.regs[i] !== expect_vec[i]) begin
                 errors = errors + 1;
-                $display("  VECTOR MISMATCH v%0d: got %h want %h", i, dut.u_vregs.regs[i], expect_vec[i]);
+                $display("  VECTOR MISMATCH v%0d: got %h want %h", i, core.dut.u_vregs.regs[i], expect_vec[i]);
             end
+        if (core.dut.u_vregs.mask_reg !== expect_scalar[10][LANES-1:0]) begin
+            errors = errors + 1;
+            $display("  LANE MASK MISMATCH: got %b want %b", core.dut.u_vregs.mask_reg,
+                     expect_scalar[10][LANES-1:0]);
+        end
 
         // 4. Instruction and cycle counts must match the golden model exactly.
         if (instr_count !== expect_scalar[8]) begin
@@ -168,7 +215,8 @@ module tb_simd_core;
         end
 
         // One machine-readable line for run_workloads.py.
-        $display("PERF lanes=%0d cycles=%0d instructions=%0d", LANES, cycle_count, instr_count);
+        $display("PERF lanes=%0d cycles=%0d instructions=%0d pipelined=%0d",
+                 LANES, cycle_count, instr_count, PIPELINED);
         if (errors == 0) $display("TEST PASSED");
         else             $display("TEST FAILED (%0d errors)", errors);
         $finish;

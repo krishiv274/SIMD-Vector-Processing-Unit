@@ -1,6 +1,6 @@
 # Instruction set
 
-The processor has 54 instructions: 16 ALU jobs, each in three forms (vector–vector, vector–scalar and reduce), plus 6 for memory, scalar maths and program flow. Every instruction is one 32-bit word.
+The processor has 55 instructions: 16 ALU jobs, each in three forms (vector–vector, vector–scalar and reduce), plus 7 for memory, the lane mask, scalar maths and program flow. Every vector and reduce instruction also has a **masked** form (`.M`), which only acts on the lanes switched on in the lane mask. Every instruction is one 32-bit word.
 
 ## Registers
 
@@ -8,6 +8,7 @@ The processor has 54 instructions: 16 ALU jobs, each in three forms (vector–ve
 | --- | --- | --- | --- |
 | `v0`–`v7` | 8 | 128 bits = 8 lanes × 16 bits | vectors: 8 numbers at once |
 | `s0`–`s7` | 8 | 32 bits | single numbers: addresses, loop counters, broadcast values, sums |
+| lane mask | 1 | 1 bit per lane | which lanes a masked instruction may change (1 = on); every lane is on at power-up |
 
 `s0` always reads as 0, and writes to it are ignored. That gives programs a free zero: `ADDI s1, s0, 5` means `s1 = 5`.
 
@@ -18,9 +19,11 @@ All arithmetic is on **16-bit two's-complement integers**: −32768 to 32767. A 
 ```text
  31      26 25  23 22  20 19  17 16 15                0
 +----------+------+------+------+--+-------------------+
-|  opcode  |  rd  |  ra  |  rb  |--|   imm (16 bits)   |
+|  opcode  |  rd  |  ra  |  rb  |m |   imm (16 bits)   |
 +----------+------+------+------+--+-------------------+
 ```
+
+Bit 16 (`m`) is the mask flag. For classes `00`, `01` and `10` it makes the instruction masked; for class `11` it is ignored.
 
 The top two opcode bits give the instruction class. For classes `00`, `01` and `10`, the low four opcode bits pick the ALU job.
 
@@ -62,12 +65,44 @@ Comparisons write all ones (`0xFFFF`) for true, because that value works directl
 | --- | --- | --- | --- |
 | `0x30` | `VLD vd, imm(sa)` | `vd = memory[sa + imm]` (one 128-bit word) | 2 |
 | `0x31` | `VST vb, imm(sa)` | `memory[sa + imm] = vb` (the stored register goes in the `rb` field; `rd` is unused) | 1 |
+| `0x34` | `VMSK va` | lane mask: lane `i` is on where `va[i] ≠ 0` (a compare result works directly) | 1 |
 | `0x38` | `ADDI sd, sa, imm` | `sd = sa + imm` | 1 |
 | `0x39` | `ADD sd, sa, sb` | `sd = sa + sb` | 1 |
 | `0x3C` | `BNE sa, sb, label` | if `sa ≠ sb`, jump to `label`; `imm` = label address − address of this `BNE` | 1 |
 | `0x3F` | `HALT` | stop | 1 |
 
-Every instruction except `VLD` takes one clock cycle. `VLD` takes two, because block RAM returns data one clock after it receives the address. Taken branches cost no extra cycle (see [architecture.md](architecture.md#timing)).
+The cycle column is for the single-cycle core: every instruction except `VLD` takes one clock cycle, and `VLD` takes two, because block RAM returns data one clock after it receives the address. Taken branches cost no extra cycle (see [architecture.md](architecture.md#timing)). The pipelined core has different rules; see the next section.
+
+## Masked instructions
+
+Add `.M` to any vector or reduce mnemonic:
+
+| Form | Example | Lanes switched off |
+| --- | --- | --- |
+| vector–vector, vector–scalar | `VADD.M v3, v1, v2`, `VMUL.M v3, v1, s2` | keep their old value of `vd` |
+| reduce | `VREDADD.M s4, v1, v2`, `VDOT.M s4, v1, v2` | add 0 to the sum |
+
+A typical pattern builds the mask from a compare and then works only on the chosen lanes, with no branch:
+
+```text
+VSLT    v2, v1, s0      # all ones where v1 < 0
+VMSK    v2              # switch on only those lanes
+VSUBS.M v1, v3, v1      # v1 = 0 − v1 there (v3 = 0); the other lanes are untouched
+```
+
+This is "merge masking", as in AVX-512 and RISC-V V with `vm = 0`. The lane mask is not cleared by reset (like the registers); a program that uses it should set it with `VMSK` first.
+
+## Cycle counts on the two cores
+
+| | Single-cycle core (`simd_core.v`) | Pipelined core (`simd_pipe_core.v`) |
+| --- | --- | --- |
+| Most instructions | 1 cycle | 1 cycle each, overlapped in 4 stages |
+| `VLD` | 2 cycles | 1 cycle (but see the next row) |
+| Branches | free | free when guessed right; 1 extra cycle when wrong. A backward branch is guessed taken, a forward one not taken |
+| Using a result at once | free | free, except: a reduce sum, a masked vector result or loaded data, used by the very next instruction, costs 1 extra cycle |
+| Total | instructions + loads | instructions + 1 + stalls + wrong guesses |
+
+The Python golden model predicts both totals exactly, and the testbench checks the hardware against them. See [pipeline.md](pipeline.md) for why each rule exists.
 
 ## Wrap-around and unused op codes
 
@@ -78,7 +113,7 @@ Every instruction except `VLD` takes one clock cycle. `VLD` takes two, because b
 
 ## Reduce mnemonics
 
-`VRED<job> sd, va, vb` adds up all lanes of `va <job> vb` into a scalar register. For example, `VREDADD s5, v1, v2` gives `Σ(v1[i] + v2[i])`. `VDOT` is another name for `VREDMUL`: the dot product of two vectors in one instruction. Each lane result is read as a signed 16-bit number and widened to 32 bits before the adding, so the sum itself does not overflow. For `VDOT` this means each product keeps only its low 16 bits, exactly as `VMUL` does, so the result is the true dot product only while every product fits in 16 bits (−32768 to 32767). A multiply that keeps the full 32-bit product is a Phase 2 candidate.
+`VRED<job> sd, va, vb` adds up all lanes of `va <job> vb` into a scalar register (only the switched-on lanes for `VRED<job>.M`). For example, `VREDADD s5, v1, v2` gives `Σ(v1[i] + v2[i])`. `VDOT` is another name for `VREDMUL`: the dot product of two vectors in one instruction. Each lane result is read as a signed 16-bit number and widened to 32 bits before the adding, so the sum itself does not overflow. For `VDOT` this means each product keeps only its low 16 bits, exactly as `VMUL` does, so the result is the true dot product only while every product fits in 16 bits (−32768 to 32767). A multiply that keeps the full 32-bit product is a Phase 2 candidate.
 
 ## Memory layout
 

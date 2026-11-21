@@ -14,10 +14,8 @@
 //                      If lane_enable[i] = 0, lane i contributes zero.
 //
 //   3. lane_flags    : one bit per lane. A lane's flag is 1 when its result
-//                      is non-zero (regardless of lane_enable). This is the
-//                      foundation for the upcoming VMSK instruction: the
-//                      processor can compare a vector against zero and load
-//                      the resulting bit-mask into the lane-mask register.
+//                      is non-zero (regardless of lane_enable). VMSK writes
+//                      these bits into the lane-mask register.
 //
 // The sum uses an adder tree instead of a long chain:
 //
@@ -85,8 +83,8 @@ module result_combiner #(
     //    the number of live totals until only total 0 remains.
     //
     //    Before the tree starts, every disabled lane is replaced with 32'd0.
-    //    The tree structure is otherwise identical to the original, so the
-    //    critical path and synthesis results are unchanged.
+    //    The tree itself is the same as before; the only extra hardware is
+    //    one AND gate per input bit in front of it.
     // -------------------------------------------------------------------------
     reg [32*LANES-1:0] partial;
     integer i, step;
