@@ -9,15 +9,16 @@
 //   * the scalar register picked by +sel= and the 8 LEDs (+expect=, in hex)
 //   * every word of the data memory (+expect_mem=, a hex file)
 //
-// syn/run_syn.py runs this for every lane count before synthesis, from a
-// folder that holds program.hex and data.hex.
+// syn/run_syn.py runs this for every lane count and both cores (PIPELINED =
+// 0 or 1) before synthesis, from a folder that holds program.hex and data.hex.
 // =============================================================================
 
 `timescale 1ns/1ps
 
 module tb_fpga_top;
 
-    parameter LANES = 8;
+    parameter LANES     = 8;
+    parameter PIPELINED = 1;
     localparam W      = 16;
     localparam DDEPTH = 1024;       // fpga_top's data memory (DADDR_W = 10)
 
@@ -29,7 +30,7 @@ module tb_fpga_top;
 
     always #5 clk = ~clk;
 
-    fpga_top #(.LANES(LANES)) dut (.clk(clk), .rst(rst), .sel(sel), .led(led), .done(done));
+    fpga_top #(.LANES(LANES), .PIPELINED(PIPELINED)) dut (.clk(clk), .rst(rst), .sel(sel), .led(led), .done(done));
 
     reg [31:0]        expected;
     reg [LANES*W-1:0] expect_mem [0:DDEPTH-1];
