@@ -21,11 +21,17 @@
 // synthesis has to build the whole processor (a program that never uses some
 // instructions would let the tools remove their logic). Setting the switches
 // to 7 shows the low byte of its running dot product (s7) on the LEDs.
+//
+// PIPELINED picks the core: 1 = the four-stage pipelined core (Phase 2,
+// simd_pipe_core.v), 0 = the single-cycle core (simd_core.v). Both have the
+// same ports and give the same answers, so nothing else here changes; the
+// synthesis sweep builds both to compare their size and speed.
 // =============================================================================
 
 module fpga_top #(
     parameter LANES        = 8,
     parameter W            = 16,
+    parameter PIPELINED    = 1,               // 1 = pipelined core, 0 = single-cycle core
     parameter PROGRAM_FILE = "program.hex",   // made by sw/vasm.py
     parameter DATA_FILE    = "data.hex"       // made by sw/run_workloads.py
 ) (
@@ -89,13 +95,26 @@ module fpga_top #(
     end
 
     // ---- The core ----------------------------------------------------------------
-    simd_core #(.LANES(LANES), .W(W), .IADDR_W(IADDR_W), .DADDR_W(DADDR_W)) u_core (
-        .clk(clk), .rst(core_rst),
-        .imem_addr(imem_addr), .imem_data(imem_data),
-        .dmem_addr(dmem_addr), .dmem_wdata(dmem_wdata), .dmem_we(dmem_we), .dmem_rdata(dmem_rdata),
-        .debug_sel(sel), .debug_data(debug_data),
-        .halted(done), .cycle_count(cycle_count), .instr_count(instr_count)
-    );
+    // Both cores plug into exactly the same wires.
+    generate
+        if (PIPELINED) begin : core
+            simd_pipe_core #(.LANES(LANES), .W(W), .IADDR_W(IADDR_W), .DADDR_W(DADDR_W)) u_core (
+                .clk(clk), .rst(core_rst),
+                .imem_addr(imem_addr), .imem_data(imem_data),
+                .dmem_addr(dmem_addr), .dmem_wdata(dmem_wdata), .dmem_we(dmem_we), .dmem_rdata(dmem_rdata),
+                .debug_sel(sel), .debug_data(debug_data),
+                .halted(done), .cycle_count(cycle_count), .instr_count(instr_count)
+            );
+        end else begin : core
+            simd_core #(.LANES(LANES), .W(W), .IADDR_W(IADDR_W), .DADDR_W(DADDR_W)) u_core (
+                .clk(clk), .rst(core_rst),
+                .imem_addr(imem_addr), .imem_data(imem_data),
+                .dmem_addr(dmem_addr), .dmem_wdata(dmem_wdata), .dmem_we(dmem_we), .dmem_rdata(dmem_rdata),
+                .debug_sel(sel), .debug_data(debug_data),
+                .halted(done), .cycle_count(cycle_count), .instr_count(instr_count)
+            );
+        end
+    endgenerate
 
     assign led = debug_data[7:0];
 
