@@ -28,7 +28,7 @@ CORE_PARTS := rtl/vec_alu_lane.v rtl/vec_alu_array.v rtl/vec_regfile.v rtl/scala
 CORE_READY := $(if $(filter-out $(wildcard $(CORE_PARTS)),$(CORE_PARTS)),,yes)
 LINT_WAIT  := $(if $(CORE_READY),,rtl/simd_core.v rtl/fpga_top.v)
 
-.PHONY: test lint unit pytest system board fuzz perf syn plots report clean
+.PHONY: test lint unit pytest system board fuzz perf sweep syn plots report clean
 
 test: lint unit pytest system board
 
@@ -95,6 +95,9 @@ fuzz:
 # ---- Experiments ------------------------------------------------------------------
 perf:
 	python3 sw/run_workloads.py --lanes 1 2 4 8 --csv results/perf.csv
+
+sweep:
+	python3 sw/sweep.py --csv results/sweep.csv
 
 syn:
 	python3 syn/run_syn.py
