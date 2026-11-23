@@ -5,20 +5,25 @@
 # maximum clock frequency after place-and-route.
 #
 # Run from the repository root (Vivado must be installed):
-#   python3 syn/run_syn.py --board-only --lanes 8   # makes build/syn/board_L8/*.hex (needs only iverilog)
-#   vivado -mode batch -source syn/vivado/build.tcl -tclargs 8
+#   python3 syn/run_syn.py --board-only --lanes 8   # makes the memory files (needs only iverilog)
+#   vivado -mode batch -source syn/vivado/build.tcl -tclargs 8          # pipelined core
+#   vivado -mode batch -source syn/vivado/build.tcl -tclargs 8 single   # single-cycle core
 #
-# The argument is the lane count (1, 2, 4 or 8). Reports go to build/vivado_L<lanes>/.
+# Arguments: the lane count (1, 2, 4 or 8), then optionally the core ("pipe",
+# the default, or "single"). Reports go to build/vivado_<core>_L<lanes>/.
 # =============================================================================
 
 set lanes [expr {$argc > 0 ? [lindex $argv 0] : 8}]
+set core  [expr {$argc > 1 ? [lindex $argv 1] : "pipe"}]
+set pipelined [expr {$core eq "single" ? 0 : 1}]
 set root  [file normalize [file join [file dirname [info script]] .. ..]]
-set out   [file join $root build vivado_L$lanes]
+set out   [file join $root build vivado_${core}_L$lanes]
 file mkdir $out
 
 # The memories are filled from program.hex and data.hex. fpga_top.v looks for
 # them in the current folder, so copy them next to the reports and work there.
-set hex_dir [file join $root build syn board_L$lanes]
+set hex_name [expr {$pipelined ? "board_L$lanes" : "board_single_L$lanes"}]
+set hex_dir [file join $root build syn $hex_name]
 foreach f {program.hex data.hex} {
     if {![file exists [file join $hex_dir $f]]} {
         puts "ERROR: $hex_dir/$f is missing - run: python3 syn/run_syn.py --board-only --lanes $lanes"
@@ -34,7 +39,7 @@ read_xdc [file join $root syn vivado basys3.xdc]
 
 # ---- Synthesis, placement, routing ------------------------------------------
 synth_design -top fpga_top -part xc7a35tcpg236-1 \
-             -include_dirs [file join $root rtl] -generic LANES=$lanes
+             -include_dirs [file join $root rtl] -generic LANES=$lanes -generic PIPELINED=$pipelined
 opt_design
 place_design
 route_design
@@ -47,10 +52,10 @@ report_timing_summary -file timing.txt
 set period [get_property PERIOD [get_clocks sys_clk]]
 set wns    [get_property SLACK [get_timing_paths -max_paths 1 -setup]]
 set fmax   [expr {1000.0 / ($period - $wns)}]
-puts [format "RESULT lanes=%d wns=%.3f ns fmax=%.2f MHz" $lanes $wns $fmax]
+puts [format "RESULT core=%s lanes=%d wns=%.3f ns fmax=%.2f MHz" $core $lanes $wns $fmax]
 
 set fp [open fmax.txt w]
-puts $fp [format "lanes=%d period_ns=%.3f wns_ns=%.3f fmax_mhz=%.2f" $lanes $period $wns $fmax]
+puts $fp [format "core=%s lanes=%d period_ns=%.3f wns_ns=%.3f fmax_mhz=%.2f" $core $lanes $period $wns $fmax]
 close $fp
 
 # Bitstream for the board. Only use it on hardware if timing.txt shows no
