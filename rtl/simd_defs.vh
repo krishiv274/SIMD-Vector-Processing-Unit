@@ -9,12 +9,14 @@
 //
 //    31      26 25  23 22  20 19  17 16 15                0
 //   +----------+------+------+------+--+-------------------+
-//   |  opcode  |  rd  |  ra  |  rb  |--|     imm (16 bit)  |
+//   |  opcode  |  rd  |  ra  |  rb  |m |     imm (16 bit)  |
 //   +----------+------+------+------+--+-------------------+
 //
 //   opcode : what to do (6 bits)
 //   rd     : destination register (where the answer goes)
 //   ra, rb : the two source registers (where the inputs come from)
+//   m      : "masked" (Phase 2). For classes 00, 01 and 10: only the lanes
+//            switched on in the lane mask take part. Ignored in class 11.
 //   imm    : a small constant written inside the instruction itself
 //            (memory offset, loop count, branch distance ...)
 //
@@ -58,6 +60,7 @@
 // ---- Class 11 opcodes: memory, scalar maths, program flow -------------------
 `define OP_VLD    6'h30   // VLD  vd, imm(sa)    vd = memory[sa + imm]
 `define OP_VST    6'h31   // VST  vb, imm(sa)    memory[sa + imm] = vb
+`define OP_VMSK   6'h34   // VMSK va             lane mask = lanes where va is not zero
 `define OP_ADDI   6'h38   // ADDI sd, sa, imm    sd = sa + imm
 `define OP_ADD    6'h39   // ADD  sd, sa, sb     sd = sa + sb
 `define OP_BNE    6'h3C   // BNE  sa, sb, label  if sa != sb jump to label

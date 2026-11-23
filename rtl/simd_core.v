@@ -1,6 +1,10 @@
 // =============================================================================
-// simd_core.v - the complete SIMD vector processing unit
+// simd_core.v - the complete SIMD vector processing unit (single-cycle)
 // =============================================================================
+// Every instruction finishes in one clock cycle (loads take two). This is the
+// Phase 1 design, kept as the baseline; simd_pipe_core.v is the Phase 2
+// pipelined version with exactly the same ports and instruction set.
+//
 // This file only connects the blocks together. The picture:
 //
 //                    +----------------+
@@ -27,13 +31,6 @@
 // LANES is a parameter. With LANES = 1 this exact design becomes an ordinary
 // one-number-at-a-time (scalar) processor. That is our fair baseline: same
 // instructions, same program, only the number of lanes changes.
-//
-// Phase 2 connections (this PR):
-//   * lane_enable is tied to all-ones so every lane contributes to sum_result.
-//     The pipelined core (Mahir's work) will drive it from the lane mask when
-//     the VMSK instruction is implemented.
-//   * lane_flags is captured on a local wire; it is not yet consumed because
-//     VMSK has not been implemented in the control unit yet.
 // =============================================================================
 
 module simd_core #(
@@ -69,8 +66,8 @@ module simd_core #(
     wire [2:0]  rd, ra, rb;
     wire [31:0] imm;
     wire [3:0]  alu_op;
-    wire        use_scalar, vreg_write, vreg_from_mem;
-    wire        sreg_write, sreg_from_sum, add_use_imm, mem_write, retire;
+    wire        use_scalar, masked, vreg_write, vreg_from_mem;
+    wire        sreg_write, sreg_from_sum, add_use_imm, mem_write, mask_write, retire;
 
     wire [LANES*W-1:0] va, vb;              // vector registers read this cycle
     wire [31:0]        sa, sb;              // scalar registers read this cycle
@@ -78,6 +75,12 @@ module simd_core #(
     wire [LANES*W-1:0] alu_out;             // raw lane outputs
     wire [LANES*W-1:0] vector_result;       // lane outputs as one vector
     wire [31:0]        sum_result;          // lane outputs added together
+    wire [LANES-1:0]   lane_mask;           // the lane mask register
+    wire [LANES-1:0]   lane_flags;          // which lane outputs are not zero (for VMSK)
+
+    // A masked instruction only uses the lanes switched on in the mask;
+    // every other instruction uses all of them.
+    wire [LANES-1:0]   lanes_on = masked ? lane_mask : {LANES{1'b1}};
 
     // ---- Control unit -------------------------------------------------------------
     vec_control_unit #(.IADDR_W(IADDR_W)) u_ctrl (
@@ -92,12 +95,14 @@ module simd_core #(
         .imm           (imm),
         .alu_op        (alu_op),
         .use_scalar    (use_scalar),
+        .masked        (masked),
         .vreg_write    (vreg_write),
         .vreg_from_mem (vreg_from_mem),
         .sreg_write    (sreg_write),
         .sreg_from_sum (sreg_from_sum),
         .add_use_imm   (add_use_imm),
         .mem_write     (mem_write),
+        .mask_write    (mask_write),
         .halted        (halted),
         .retire        (retire)
     );
@@ -107,7 +112,7 @@ module simd_core #(
     wire [31:0] scalar_sum   = sa + (add_use_imm ? imm : sb);
     wire [31:0] sreg_wdata   = sreg_from_sum ? sum_result : scalar_sum;
 
-    scalar_regfile u_sregs (
+    scalar_regfile #(.BYPASS(0)) u_sregs (
         .clk         (clk),
         .read_addr_a (ra),
         .read_data_a (sa),
@@ -124,25 +129,21 @@ module simd_core #(
     // A load writes memory data; everything else writes the lane results.
     wire [LANES*W-1:0] vreg_wdata = vreg_from_mem ? dmem_rdata : vector_result;
 
-    // For now every write changes all lanes and the lane mask is not used;
-    // masked instructions are connected up with the Phase 2 core.
-    /* verilator lint_off UNUSEDSIGNAL */
-    wire [LANES-1:0] lane_mask;
-    /* verilator lint_on UNUSEDSIGNAL */
-
-    vec_regfile #(.LANES(LANES), .W(W)) u_vregs (
+    // BYPASS = 0: an instruction that reads and writes the same register
+    // must read the old value (VADD v1, v1, v2).
+    vec_regfile #(.LANES(LANES), .W(W), .BYPASS(0)) u_vregs (
         .clk             (clk),
         .read_addr_a     (ra),
         .read_data_a     (va),
         .read_addr_b     (rb),
         .read_data_b     (vb),
         .write_en        (vreg_write),
-        .write_lanes     ({LANES{1'b1}}),
+        .write_lanes     (lanes_on),          // masked: switched-off lanes keep their value
         .write_addr      (rd),
         .write_data      (vreg_wdata),
         .mask            (lane_mask),
-        .mask_write_en   (1'b0),
-        .mask_write_data ({LANES{1'b1}})
+        .mask_write_en   (mask_write),        // VMSK: the non-zero lanes become the new mask
+        .mask_write_data (lane_flags)
     );
 
     lane_mux #(.LANES(LANES), .W(W)) u_lane_mux (
@@ -159,20 +160,12 @@ module simd_core #(
         .y  (alu_out)
     );
 
-    // ---- Result combiner -------------------------------------------------------
-    // lane_enable: all lanes on for the single-cycle core.
-    // lane_flags:  connected to a local wire; will be used by VMSK in the
-    //              pipelined core. Suppress the unused-signal warning until then.
-    /* verilator lint_off UNUSEDSIGNAL */
-    wire [LANES-1:0] combiner_flags;
-    /* verilator lint_on UNUSEDSIGNAL */
-
     result_combiner #(.LANES(LANES), .W(W)) u_combiner (
         .lane_results  (alu_out),
-        .lane_enable   ({LANES{1'b1}}),   // all lanes on; pipelined core will use lane_mask
+        .lane_enable   (lanes_on),          // masked reduce: switched-off lanes add 0
         .vector_result (vector_result),
         .sum_result    (sum_result),
-        .lane_flags    (combiner_flags)
+        .lane_flags    (lane_flags)
     );
 
     // ---- Data memory connections ---------------------------------------------
@@ -183,7 +176,7 @@ module simd_core #(
 
     // ---- Performance counters --------------------------------------------------
     // These let us measure speed-up: run the same program with LANES = 1 and
-    // LANES = 8 and compare the cycle counts.\
+    // LANES = 8 and compare the cycle counts.
     always @(posedge clk) begin
         if (rst) begin
             cycle_count <= 32'd0;

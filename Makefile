@@ -2,10 +2,11 @@
 # Makefile - one-word commands for the whole project
 # =============================================================================
 #   make test     lint + unit testbenches + Python checks + full-system runs + random
-#                 programs + board check
-#   make fuzz     1,000 random programs per lane count, RTL against the golden model
+#                 programs + board check. The full-system runs and the random
+#                 programs cover BOTH cores (single-cycle and pipelined).
+#   make fuzz     1,000 random programs per lane count and core, RTL against the golden model
 #   make lint     check every Verilog file with Verilator
-#   make perf     scalar vs SIMD cycle counts for 1, 2, 4, 8 lanes -> results/perf.csv
+#   make perf     cycle counts for 1, 2, 4, 8 lanes, both cores   -> results/perf.csv
 #   make syn      FPGA size and maximum clock speed            -> results/fpga_*.csv
 #   make plots    figures                                       -> results/figures/
 #   make report   IEEE report PDF                               -> reports/Phase1_Report.pdf
@@ -71,7 +72,8 @@ ifneq ($(wildcard sw/tests),)
 	python3 -m unittest discover -s sw/tests
 endif
 
-# ---- Full system: every workload and directed test at 1, 2, 4 and 8 lanes --------
+# ---- Full system: every workload and directed test at 1, 2, 4 and 8 lanes, -------
+# ---- on both cores ------------------------------------------------------------------
 system:
 ifneq ($(and $(CORE_READY),$(wildcard tb/tb_simd_core.v)),)
 	python3 sw/run_workloads.py --lanes 1 2 4 8
@@ -86,7 +88,7 @@ ifneq ($(and $(CORE_READY),$(wildcard rtl/fpga_top.v)),)
 	python3 syn/run_syn.py --board-only
 endif
 
-# ---- Random programs, a longer run (about 3 minutes) ---------------------------
+# ---- Random programs, a longer run (about 6 minutes) ---------------------------
 fuzz:
 	python3 sw/fuzz.py --programs 1000
 
