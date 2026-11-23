@@ -147,6 +147,12 @@ WORKLOADS = {
     "abs": setup_abs,
     "sumpos": setup_sumpos,
     "isa_test": setup_isa_test,
+    # Four-times-unrolled versions of vadd and dot.
+    # They use the same input data as the base program so the golden model
+    # check is identical; only the program text (and instruction count) differs.
+    # They need N / LANES to be a multiple of 4.
+    "vadd_unroll": setup_vadd,
+    "dot_unroll": setup_dot,
 }
 
 
@@ -156,7 +162,7 @@ def prepare(name, lanes, pipelined=False, n=N):
     """Golden-model run of one workload. Returns everything the RTL run needs."""
     if not 1 <= n <= N:
         raise ValueError(f"{name}: n = {n}, but arrays hold at most {N} numbers")
-    rng = random.Random(f"{name}-seed")          # same data for every lane count and core
+    rng = random.Random(f"{name.removesuffix('_unroll')}-seed")  # same data for every lane count and core
     model = golden.SimdModel(lanes, W, pipelined=pipelined)
     symbols, elements, check = WORKLOADS[name](rng, model, n)
     if elements % lanes:
