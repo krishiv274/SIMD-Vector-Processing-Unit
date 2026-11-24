@@ -1,0 +1,29 @@
+% Pipeline timing of one vadd loop pass on the pipelined core: the
+% load-use stall (VADD waits for v2), forwarding (VST gets v3 from W) and the
+% backward branch guessed taken (the next pass starts at once).
+\begin{tikzpicture}[x=7.4mm, y=5.2mm, font=\scriptsize]
+  \tikzset{st/.style={draw=edge, minimum width=6.6mm, minimum height=4.4mm, inner sep=0pt, font=\scriptsize},
+           F/.style={st, fill=greyfill}, D/.style={st, fill=simdfill}, X/.style={st, fill=simdfill, draw=simd},
+           W/.style={st, fill=white}, B/.style={st, fill=scalfill, draw=scal}}
+  % cycle numbers
+  \foreach \c in {1,...,10} \node[text=edge] at (\c+1.6, 0.9) {\c};
+  \node[text=edge, anchor=east] at (2.0, 0.9) {cycle};
+  % instructions (row, label)
+  \foreach \r/\t in {0/{VLD v1, A(s1)}, 1/{VLD v2, B(s1)}, 2/{VADD v3, v1, v2}, 3/{VST v3, C(s1)},
+                     4/{ADDI s1, s1, 1}, 5/{BNE s1, s2, loop}, 6/{VLD v1, A(s1)}}
+     \node[anchor=east, font=\ttfamily\scriptsize] at (2.0, -\r) {\t};
+  % stages: \node[style] at (cycle+1.6, -row)
+  \node[F] at (2.6,0) {F}; \node[D] at (3.6,0) {D}; \node[X] at (4.6,0) {X}; \node[W] at (5.6,0) {W};
+  \node[F] at (3.6,-1) {F}; \node[D] at (4.6,-1) {D}; \node[X] at (5.6,-1) {X}; \node[W] at (6.6,-1) {W};
+  \node[F] at (4.6,-2) {F}; \node[D] at (5.6,-2) {D}; \node[B] at (6.6,-2) {D}; \node[X] at (7.6,-2) {X}; \node[W] at (8.6,-2) {W};
+  \node[F] at (5.6,-3) {F}; \node[B] at (6.6,-3) {F}; \node[D] at (7.6,-3) {D}; \node[X] at (8.6,-3) {X}; \node[W] at (9.6,-3) {W};
+  \node[F] at (7.6,-4) {F}; \node[D] at (8.6,-4) {D}; \node[X] at (9.6,-4) {X}; \node[W] at (10.6,-4) {W};
+  \node[F] at (8.6,-5) {F}; \node[D] at (9.6,-5) {D}; \node[X] at (10.6,-5) {X}; \node[W] at (11.6,-5) {W};
+  \node[F] at (9.6,-6) {F}; \node[D] at (10.6,-6) {D}; \node[X] at (11.6,-6) {X};
+  % notes
+  \node[anchor=west, text=scal] at (12.4,-2) {stall: \texttt{v2} is still on its way from memory};
+  \draw[arr, draw=simd] (8.6,-2.4) -- (8.6,-2.6);
+  \node[anchor=west, text=simd] at (12.4,-3) {forwarded: \texttt{v3} taken from W};
+  \node[anchor=west, text=edge] at (12.4,-5) {guessed taken in D \dots};
+  \node[anchor=west, text=edge] at (12.4,-6) {\dots\ so the next pass starts at once};
+\end{tikzpicture}

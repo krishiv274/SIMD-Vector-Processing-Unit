@@ -1,0 +1,80 @@
+% Pipelined core: four stages, three pipeline registers, and the paths that
+% handle hazards (forwarding, write-through, branch guess and check, stall).
+% Blue = vector datapath, orange = scalar side, grey = control and memories.
+% Dashed = control.
+\begin{tikzpicture}[x=1mm, y=1mm, font=\footnotesize,
+    blk/.style={box, minimum height=9mm, inner sep=2pt},
+    vblk/.style={blk, fill=simdfill, draw=simd},
+    sblk/.style={blk, fill=scalfill, draw=scal},
+    gblk/.style={blk, fill=greyfill},
+    preg/.style={draw=edge, fill=greyfill, minimum width=2.6mm, minimum height=56mm, inner sep=0pt},
+    stage/.style={font=\small\bfseries, text=edge},
+    lbl/.style={note}]
+
+% ---- Stage titles and pipeline registers ----------------------------------------
+\node[stage] at (9,50)   {F: fetch};
+\node[stage] at (50,50)  {D: decode};
+\node[stage] at (107,50) {X: execute};
+\node[stage] at (157,50) {W: write};
+
+\node[preg] (fd) at (24,4) {};  \node[lbl, above=0.5mm] at (fd.north) {RAM out};
+\node[preg] (dx) at (78,4) {};  \node[lbl, above=0.5mm] at (dx.north) {D/X};
+\node[preg] (xw) at (136,4) {}; \node[lbl, above=0.5mm] at (xw.north) {X/W};
+
+% ---- F ---------------------------------------------------------------------------
+\node[gblk, minimum width=17mm] (imem) at (9,14)  {Instruction\\memory};
+\node[gblk, minimum width=17mm] (fsel) at (9,-14) {Next fetch\\address};
+
+% ---- D ---------------------------------------------------------------------------
+\node[gblk, minimum width=24mm] (dec)  at (42,24)  {Decoder};
+\node[gblk, minimum width=13mm] (guess) at (66,24) {Branch\\guess};
+\node[vblk, minimum width=34mm] (vrf)  at (51,9)   {Vector registers + mask\\\scriptsize write-through};
+\node[sblk, minimum width=34mm] (srf)  at (51,-4)  {Scalar registers\\\scriptsize write-through};
+\node[gblk, minimum width=34mm] (haz)  at (51,-14) {Hazard unit\\\scriptsize stall $\cdot$ forwarding select};
+
+% ---- X ---------------------------------------------------------------------------
+\node[vblk, minimum width=7mm, minimum height=26mm, font=\scriptsize] (fwd) at (87,4) {};
+\node[font=\scriptsize, rotate=90] at (fwd.center) {forwarding select};
+\node[vblk, minimum width=14mm] (mux)  at (102,13) {Lane\\MUX};
+\node[vblk, minimum width=16mm] (alus) at (122,13) {8 lane\\ALUs};
+\node[sblk, minimum width=14mm] (sadd) at (102,-4) {Scalar\\adder};
+\node[gblk, minimum width=16mm] (dmem) at (122,-4) {Data\\memory};
+\node[gblk, minimum width=14mm] (bchk) at (102,-17){Branch\\check};
+
+% ---- W ---------------------------------------------------------------------------
+\node[vblk, minimum width=26mm] (comb) at (157,13) {Result combiner\\\scriptsize adder tree $\cdot$ lane flags};
+\node[gblk, minimum width=26mm] (wsel) at (157,-6) {Result select\\\scriptsize lanes / sum / load};
+
+% ---- Main flow -------------------------------------------------------------------
+\draw[arr] (imem.east) -- (fd.west |- imem.east);
+\draw[arr] (fd.east |- dec.west) -- (dec.west);
+\draw[arr] (dec.south) -- (dec.south |- vrf.north);
+\draw[arr] (vrf.east) -- (dx.west |- vrf.east);
+\draw[arr] (srf.east) -- (dx.west |- srf.east);
+\draw[arr] (dx.east |- 0,13) -- (fwd.west |- 0,13);
+\draw[arr] (dx.east |- 0,-4) -- (fwd.west |- 0,-4);
+\draw[arr] (fwd.east |- mux.west) -- (mux.west);
+\draw[arr] (mux.east) -- (alus.west);
+\draw[arr] (fwd.east |- sadd.west) -- (sadd.west);
+\draw[arr] (sadd.east) -- node[above, lbl]{addr} (dmem.west);
+\draw[arr] (fwd.east |- 0,-7) -- (94,-7) |- (bchk.west);
+\draw[arr] (alus.east) -- (xw.west |- alus.east);
+\draw[arr] (dmem.east) -- (xw.west |- dmem.east);
+\draw[arr] (xw.east |- comb.west) -- (comb.west);
+\draw[arr] (xw.east |- wsel.west) -- node[above, lbl, pos=0.45]{load} (wsel.west);
+\draw[arr] (comb.south) -- (wsel.north);
+
+% ---- Forwarding: W back to the operands in X ----------------------------------------
+\draw[arr, draw=simd, line width=0.8pt] (wsel.east) -- (176,-6) -- (176,38) -- node[above, lbl, pos=0.5]{forwarding: the result in W replaces a stale operand in X} (87,38) -- (fwd.north);
+
+% ---- Write-back into the register files, seen at once in D ----------------------------
+\draw[arr, draw=simd, line width=0.8pt] (wsel.south) -- (157,-35) -- node[below, lbl, pos=0.5]{write-back; write-through makes it visible to D in the same cycle} (30,-35) -- (30,9) -- (vrf.west);
+\draw[arr, draw=scal, line width=0.8pt] (30,-4) -- (srf.west);
+
+% ---- Branches and stalls --------------------------------------------------------------
+\draw[arr, dashed] (dec.east) -- (guess.west);
+\draw[arr, dashed] (guess.north) -- (66,41) -- node[above, lbl, pos=0.55]{backward branch: fetch its target next} (2,41) -- (2,-14) -- (fsel.west);
+\draw[arr, dashed] (bchk.south) -- (102,-28) -- node[below, lbl, pos=0.45]{wrong guess: drop the instruction in D, fetch the right one} (9,-28) -- (fsel.south);
+\draw[arr, dashed] (haz.west) -- node[below, lbl, pos=0.15]{stall} (fsel.east |- haz.west);
+\draw[arr] (fsel.north) -- node[right, lbl]{address} (imem.south);
+\end{tikzpicture}

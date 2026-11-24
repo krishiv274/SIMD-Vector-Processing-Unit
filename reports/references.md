@@ -1,6 +1,6 @@
 # References
 
-The works the Phase 1 report builds on, grouped by topic. Numbers match the report, which numbers them in the order they are first cited.
+The works the reports build on, grouped by topic. Numbers 1–28 match the Phase 1 report, which numbers them in the order they are first cited; 29–32 were added for Phase 2. The Phase 2 report and the combined paper number their references in their own order of first citation.
 
 ## SIMD and vector architecture
 
@@ -35,6 +35,13 @@ The works the Phase 1 report builds on, grouped by topic. Numbers match the repo
 
 21. G. M. Amdahl, "Validity of the single processor approach to achieving large scale computing capabilities," *AFIPS Spring Joint Computer Conf.*, 1967, pp. 483–485.
 22. J. L. Gustafson, "Reevaluating Amdahl's law," *Commun. ACM*, vol. 31, no. 5, pp. 532–533, 1988. Larger problems shrink the serial share.
+
+## Pipelining, predication and scheduling (Phase 2)
+
+29. D. A. Patterson and J. L. Hennessy, *Computer Organization and Design RISC-V Edition: The Hardware Software Interface*, 2nd ed., Morgan Kaufmann, 2021. The five-stage pipeline, forwarding and the load-use stall.
+30. J. E. Smith, "A study of branch prediction strategies," *Proc. 8th Annu. Symp. Computer Architecture (ISCA)*, 1981, pp. 135–148. Static prediction, including backward-taken / forward-not-taken.
+31. J. R. Allen, K. Kennedy, C. Porterfield and J. Warren, "Conversion of control dependence to data dependence," *Proc. 10th ACM POPL*, 1983, pp. 177–189. If-conversion, the idea behind masked execution.
+32. J. J. Dongarra and A. R. Hinds, "Unrolling loops in FORTRAN," *Software: Practice and Experience*, vol. 9, no. 3, pp. 219–226, 1979. Loop unrolling.
 
 ## Verification and tools
 

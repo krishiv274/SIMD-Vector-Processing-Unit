@@ -7,9 +7,10 @@
 #   make fuzz     1,000 random programs per lane count and core, RTL against the golden model
 #   make lint     check every Verilog file with Verilator
 #   make perf     cycle counts for 1, 2, 4, 8 lanes, both cores   -> results/perf.csv
+#   make sweep    speed-up against the problem size N, both cores -> results/sweep.csv
 #   make syn      FPGA size and maximum clock speed            -> results/fpga_*.csv
 #   make plots    figures                                       -> results/figures/
-#   make report   IEEE report PDF                               -> reports/Phase1_Report.pdf
+#   make report   Phase 2 report and combined paper            -> reports/*.pdf
 #   make clean    delete build outputs
 #
 # Each test only runs if its files exist, so the project can be built up one
@@ -106,10 +107,14 @@ plots:
 	$(PLOT) sw/plot_perf.py
 	$(PLOT) syn/plot_fpga.py
 
+# The Phase 1 report (main.tex) is kept as submitted; this builds the Phase 2
+# report and the combined paper from the committed results.
 report:
-	$(PLOT) reports/src/make_figures.py
-	cd reports/src && tectonic -X compile main.tex
-	cp reports/src/main.pdf reports/Phase1_Report.pdf
+	$(PLOT) reports/src/make_figures_p2.py
+	cd reports/src && python3 assemble.py phase2 && tectonic -X compile phase2.tex
+	cd reports/src && python3 assemble.py combined && tectonic -X compile combined.tex
+	cp reports/src/phase2.pdf reports/Phase2_Report.pdf
+	cp reports/src/combined.pdf reports/Combined_Phase1_Phase2_Paper.pdf
 
 clean:
-	rm -rf $(BUILD) reports/src/main.pdf
+	rm -rf $(BUILD) reports/src/main.pdf reports/src/phase2.pdf reports/src/combined.pdf

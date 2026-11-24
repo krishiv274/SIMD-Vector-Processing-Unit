@@ -18,3 +18,7 @@ reports/src/*.out
 # OS / editors
 .DS_Store
 .vscode/
+
+# Assembled from main.tex + <name>_body.tex by reports/src/assemble.py
+reports/src/phase2.tex
+reports/src/combined.tex
