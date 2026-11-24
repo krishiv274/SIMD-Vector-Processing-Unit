@@ -142,7 +142,7 @@ SIMD-Vector-Processing-Unit/
 ├── syn/                  FPGA synthesis sweep (ECP5, Artix-7) and the Vivado flow for Basys-3
 ├── results/              perf.csv, sweep.csv, fpga_ecp5.csv, fpga_artix7.csv and figures
 ├── docs/                 architecture, pipeline, instruction set, speed-up analysis, one page per block
-├── reports/              Phase 1 and Phase 2 reports, combined paper (PDF and LaTeX source), references
+├── reports/              Phase 1 and Phase 2 reports, combined paper (PDF and LaTeX source), slides, references
 ├── .github/workflows/    lint and tests on every push and pull request
 └── Makefile              make test | fuzz | perf | sweep | syn | plots | report
 ```
@@ -152,6 +152,7 @@ SIMD-Vector-Processing-Unit/
 
 - **Phase 2 report:** [`reports/Phase2_Report.pdf`](reports/Phase2_Report.pdf) (IEEE format; LaTeX source in [`reports/src`](reports/src))
 - **Combined paper, both phases:** [`reports/Combined_Phase1_Phase2_Paper.pdf`](reports/Combined_Phase1_Phase2_Paper.pdf)
+- **Phase 2 slides:** [`reports/Phase2_Presentation.pdf`](reports/Phase2_Presentation.pdf)
 - **Phase 1 report:** [`reports/Phase1_Report.pdf`](reports/Phase1_Report.pdf)
 - **Prototype video (4:51):** [watch on Google Drive](https://drive.google.com/file/d/1aqpSWyA0_Q8v4WhcD_3P8AJsQFPEuM7q/view?usp=drive_link)
 
